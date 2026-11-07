@@ -46,6 +46,8 @@ static unsigned prox_bit(RECEPCAO *r)
 // escalonador trata)
 static int deve_parar(const RECEPCAO *r)
 {
+    // uma alternativa caso dê erro
+    // return r->parar || (r->n == 0 && escalonador_deve_parar());
     return r->parar || escalonador_deve_parar();
 }
 

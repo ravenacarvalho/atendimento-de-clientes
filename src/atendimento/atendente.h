@@ -1,38 +1,40 @@
+
 #ifndef ATENDENTE_H
 #define ATENDENTE_H
 
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <sys/types.h>
-#include <time.h>
-#include <ucontext.h>
 
-/* Prioridade atribuida pela thread de Recepcao. */
-typedef enum {
-    PRIORIDADE_BAIXA = 0,
-    PRIORIDADE_ALTA = 1
-} Prioridade;
+#include "recepcao.h"
+#include "fila.h"
 
 typedef struct
 {
-	long      N;                 // clientes a atender; 0 = infinitos
-	long      X;                 // paciência, em ms, dos clientes de prioridade baixa
-	FILA     *Fila;
-	RECEPCAO *Recepcao;
-	pid_t     PidAnalista;
+    long N;                     // Número de clientes (0 = infinito)
+    long X;                     // Paciência máxima em ms
 
-	volatile pid_t PidEmAtendimento;  // 0 quando nenhum cliente está sendo atendido
+    FILA *Fila;
+    RECEPCAO *Recepcao;
 
-	volatile int  Encerrar;      // pedido externo de parada (modo N = 0)
-	volatile long Atendidos;
-	volatile long Satisfeitos;
+    pid_t PidAnalista;
+    volatile pid_t PidEmAtendimento;
+
+    volatile int Encerrar;
+
+    volatile long Atendidos;
+    volatile long Satisfeitos;
 
 } ATENDENTE;
 
+// Corpo da thread do Atendente 
 void Atendente(void *Argumento);
-int  ClienteSatisfeito(CLIENTE *Cliente, long FimMs, long X);
+
+// Verifica se o cliente foi atendido dentro da paciência
+int ClienteSatisfeito(CLIENTE *Cliente, long FimMs, long X);
+
+// Processa os PIDs restantes do arquivo LNG
 void EsvaziaLng(ATENDENTE *Dados);
-int  AnalistaAtivo();
+
+// Verifica se o processo Analista está ativo
+int AnalistaAtivo(void);
 
 #endif
