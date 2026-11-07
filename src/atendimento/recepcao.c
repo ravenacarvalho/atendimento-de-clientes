@@ -103,27 +103,6 @@ void recepcao_remove_semaforos(void)
     sem_unlink(SEM_BLOCK_NOME);
 }
 
-// static int cria_semaforos(RECEPCAO *r)
-// {
-//     // se uma execucao anterior caiu, pode ter sobrado semaforo velho no
-//     // sistema. um com valor 0 travaria tudo, entao apaga antes de criar
-//     recepcao_remove_semaforos();
-
-//     r->sem_atend = sem_open(SEM_ATEND_NOME, O_CREAT, 0644, 1);
-//     if (r->sem_atend == SEM_FAILED) {
-//         avisa("recepcao: sem_open(%s): %s\n", SEM_ATEND_NOME, strerror(errno));
-//         return -1;
-//     }
-//     r->sem_block = sem_open(SEM_BLOCK_NOME, O_CREAT, 0644, 1);
-//     if (r->sem_block == SEM_FAILED) {
-//         avisa("recepcao: sem_open(%s): %s\n", SEM_BLOCK_NOME, strerror(errno));
-//         sem_close(r->sem_atend);
-//         recepcao_remove_semaforos();
-//         return -1;
-//     }
-//     return 0;
-// }
-
 static int cria_semaforos(RECEPCAO *r)
 {
     r->sem_atend = sem_open(SEM_ATEND_NOME, O_CREAT, 0644, 1);
