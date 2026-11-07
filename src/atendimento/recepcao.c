@@ -47,8 +47,10 @@ static unsigned prox_bit(RECEPCAO *r)
 static int deve_parar(const RECEPCAO *r)
 {
     // uma alternativa caso dê erro
-    // return r->parar || (r->n == 0 && escalonador_deve_parar());
-    return r->parar || escalonador_deve_parar();
+    return r->parar || (r->n == 0 && escalonador_deve_parar());
+
+    // Modificação feita nesse retorno
+    // return r->parar || escalonador_deve_parar();
 }
 
 // ---- leitura de N e X ----
@@ -94,30 +96,54 @@ int recepcao_le_parametros(int argc, char *argv[], long *n, long *x)
 
 // ---- semaforos ----
 
+
 void recepcao_remove_semaforos(void)
 {
     sem_unlink(SEM_ATEND_NOME);
     sem_unlink(SEM_BLOCK_NOME);
 }
 
+// static int cria_semaforos(RECEPCAO *r)
+// {
+//     // se uma execucao anterior caiu, pode ter sobrado semaforo velho no
+//     // sistema. um com valor 0 travaria tudo, entao apaga antes de criar
+//     recepcao_remove_semaforos();
+
+//     r->sem_atend = sem_open(SEM_ATEND_NOME, O_CREAT, 0644, 1);
+//     if (r->sem_atend == SEM_FAILED) {
+//         avisa("recepcao: sem_open(%s): %s\n", SEM_ATEND_NOME, strerror(errno));
+//         return -1;
+//     }
+//     r->sem_block = sem_open(SEM_BLOCK_NOME, O_CREAT, 0644, 1);
+//     if (r->sem_block == SEM_FAILED) {
+//         avisa("recepcao: sem_open(%s): %s\n", SEM_BLOCK_NOME, strerror(errno));
+//         sem_close(r->sem_atend);
+//         recepcao_remove_semaforos();
+//         return -1;
+//     }
+//     return 0;
+// }
+
 static int cria_semaforos(RECEPCAO *r)
 {
-    // se uma execucao anterior caiu, pode ter sobrado semaforo velho no
-    // sistema. um com valor 0 travaria tudo, entao apaga antes de criar
-    recepcao_remove_semaforos();
-
     r->sem_atend = sem_open(SEM_ATEND_NOME, O_CREAT, 0644, 1);
+
     if (r->sem_atend == SEM_FAILED) {
-        avisa("recepcao: sem_open(%s): %s\n", SEM_ATEND_NOME, strerror(errno));
+        avisa("recepcao: sem_open(%s): %s\n",
+              SEM_ATEND_NOME, strerror(errno));
         return -1;
     }
+
     r->sem_block = sem_open(SEM_BLOCK_NOME, O_CREAT, 0644, 1);
+
     if (r->sem_block == SEM_FAILED) {
-        avisa("recepcao: sem_open(%s): %s\n", SEM_BLOCK_NOME, strerror(errno));
+        avisa("recepcao: sem_open(%s): %s\n",
+              SEM_BLOCK_NOME, strerror(errno));
+
         sem_close(r->sem_atend);
-        recepcao_remove_semaforos();
         return -1;
     }
+
     return 0;
 }
 

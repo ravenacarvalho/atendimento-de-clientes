@@ -217,19 +217,22 @@ static void remover_registro_pid(void)
     fclose(arquivo);
 }
 
+
 int main(void)
 {
     sigset_t conjunto_sinais;
     int sinal_recebido;
     int resultado;
+    int encerrar = 0;
 
     /*
-     * Bloqueia SIGUSR1 antes de registrar o PID. Assim, se o Atendente
-     * enviar o sinal logo apos ler o arquivo de PID, ele ficara pendente
-     * ate a chamada de sigwait, sem ser perdido.
-     */
+        O Analista deve receber os sinais de forma sincronizada.
+        SIGUSR1: processar os PIDs.
+        SIGTERM: finalizar depois de esvaziar o arquivo.
+    */
     sigemptyset(&conjunto_sinais);
     sigaddset(&conjunto_sinais, SIGUSR1);
+    sigaddset(&conjunto_sinais, SIGTERM);
 
     if (sigprocmask(SIG_BLOCK, &conjunto_sinais, NULL) == -1) {
         perror("Analista: sigprocmask");
@@ -237,6 +240,7 @@ int main(void)
     }
 
     sem_block = sem_open(SEM_BLOCK, O_CREAT, 0666, 1);
+
     if (sem_block == SEM_FAILED) {
         perror("Analista: sem_open SEM_BLOCK");
         return EXIT_FAILURE;
@@ -249,32 +253,49 @@ int main(void)
 
     printf("Analista iniciado (PID %ld), aguardando notificacoes...\n",
            (long)getpid());
+
     fflush(stdout);
 
-    while(1) {
-        /* O processo fica dormindo ate receber SIGUSR1. */
+    while (!encerrar) {
+
         if (sigwait(&conjunto_sinais, &sinal_recebido) != 0) {
             perror("Analista: sigwait");
             break;
         }
 
+        if (sinal_recebido == SIGTERM)
+            encerrar = 1;
+
+       
+        // Processa um lote de no maximo 10 PIDs.
         resultado = processar_lote();
 
-        if (resultado > 0) {
-            /*
-             * Ha mais PIDs no arquivo. Envia SIGUSR1 para si proprio:
-             * como SIGUSR1 continua bloqueado, a notificacao fica pendente
-             * e sera consumida pela proxima chamada de sigwait. Assim,
-             * cada despertar processa no maximo MAX_IMPRESSOS PIDs.
-             */
+        /*
+          Se existem mais PIDs, continua processando.
+          No encerramento, nao precisamos enviar sinais:
+          podemos esvaziar todos os lotes antes de sair.
+        */
+        while (resultado > 0 && encerrar)
+            resultado = processar_lote();
+
+        if (resultado > 0 && !encerrar) {
+
             if (kill(getpid(), SIGUSR1) == -1)
                 perror("Analista: reenviar SIGUSR1");
-        } else if (resultado < 0) {
-            fprintf(stderr, "Analista: falha ao processar lote.\\n");
+        }
+
+        if (resultado < 0) {
+            fprintf(stderr,
+                    "Analista: falha ao processar lote.\n");
         }
     }
 
+    // Remove o registro e fecha o semaforo.
     remover_registro_pid();
+
     sem_close(sem_block);
-    return EXIT_FAILURE;
+
+    printf("Analista encerrado.\n");
+
+    return EXIT_SUCCESS;
 }

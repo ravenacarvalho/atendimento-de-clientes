@@ -1,55 +1,95 @@
-# Compilador e Flags
+
 CC = gcc
-CFLAGS = -Wall -Wextra -g -Isrc -Isrc/atendimento -Isrc/escalonador -Isrc/input-output
+
+CFLAGS = -Wall -Wextra -g \
+         -Isrc \
+         -Isrc/atendimento \
+         -Isrc/escalonador \
+         -Isrc/input-output \
+         -Isrc/utils
+
 LDFLAGS = -lrt
 
-# Nomes dos executaveis
 EXEC_ATENDIMENTO = atendimento
 EXEC_ANALISTA = analista
 EXEC_CLIENTE = cliente
 
-# Localizacao dos fontes (.c)
-SRC_ATENDIMENTO = $(wildcard src/atendimento/*.c src/escalonador/*.c src/input-output/*.c)
-SRC_CLIENTE = cliente.c
+# Fontes do processo Atendimento e suas threads
+SRC_ATENDIMENTO = $(wildcard \
+    src/atendimento/*.c \
+    src/escalonador/*.c \
+    src/input-output/*.c)
 
-# Objetos correspondentes (.o)
 OBJ_ATENDIMENTO = $(SRC_ATENDIMENTO:.c=.o)
-OBJ_CLIENTE = cliente.o
 
-# Regra principal: compila tudo
-all: $(EXEC_CLIENTE) $(EXEC_ATENDIMENTO)
+# Processo Analista
+SRC_ANALISTA = src/processos/analista.c
+OBJ_ANALISTA = $(SRC_ANALISTA:.c=.o)
 
-# Executavel principal de Atendimento (com seu escalonador ucontext)
+# Processo Cliente fornecido
+SRC_CLIENTE = src/processos/cliente.c
+OBJ_CLIENTE = $(SRC_CLIENTE:.c=.o)
+
+
+# Compila todos os executaveis
+all: $(EXEC_CLIENTE) $(EXEC_ANALISTA) $(EXEC_ATENDIMENTO)
+
+
+# Processo principal
 $(EXEC_ATENDIMENTO): $(OBJ_ATENDIMENTO)
 	$(CC) $(OBJ_ATENDIMENTO) -o $@ $(LDFLAGS)
 
-# Executavel do Cliente (fornecido no trabalho)
+
+# Processo Analista
+$(EXEC_ANALISTA): $(OBJ_ANALISTA)
+	$(CC) $(OBJ_ANALISTA) -o $@ $(LDFLAGS)
+
+
+# Processo Cliente
 $(EXEC_CLIENTE): $(OBJ_CLIENTE)
 	$(CC) $(OBJ_CLIENTE) -o $@ $(LDFLAGS)
 
-# Regra generica para compilar qualquer .c em .o
+
+# Compilacao dos arquivos objeto
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Testes da fila e da Recepcao (Pessoa 2). Usa o escalonador real, mas nao
-# precisa do atendente nem do main do atendimento.
-EXEC_TESTE = teste_recepcao
-SRC_TESTE  = teste/teste_recepcao.c src/atendimento/fila.c \
-             src/atendimento/recepcao.c \
-             src/escalonador/escalonador.c src/input-output/teclado.c
 
-$(EXEC_TESTE): $(SRC_TESTE) $(wildcard src/atendimento/*.h)
+# Testes da Recepcao
+EXEC_TESTE = teste_recepcao
+
+SRC_TESTE = tests/teste_recepcao.c \
+            src/atendimento/fila.c \
+            src/atendimento/recepcao.c \
+            src/escalonador/escalonador.c \
+            src/input-output/teclado.c
+
+$(EXEC_TESTE): $(SRC_TESTE)
 	$(CC) $(CFLAGS) $(SRC_TESTE) -o $@ $(LDFLAGS)
+
 
 test: $(EXEC_CLIENTE) $(EXEC_TESTE)
 	./$(EXEC_TESTE)
 
-# Limpeza dos arquivos compilados e gerados
-clean:
-	rm -f $(OBJ_ATENDIMENTO) $(OBJ_CLIENTE) $(EXEC_ATENDIMENTO) $(EXEC_ANALISTA) $(EXEC_CLIENTE) $(EXEC_TESTE) demanda.txt LNG.txt
 
-# Teste de execucao rapida (exemplo: N=10 clientes, paciencia X=1000ms)
+# Execucao de exemplo
 run: all
 	./$(EXEC_ATENDIMENTO) 10 1000
+
+
+# Limpeza
+clean:
+	rm -f $(OBJ_ATENDIMENTO) \
+	      $(OBJ_ANALISTA) \
+	      $(OBJ_CLIENTE) \
+	      $(EXEC_ATENDIMENTO) \
+	      $(EXEC_ANALISTA) \
+	      $(EXEC_CLIENTE) \
+	      $(EXEC_TESTE) \
+	      demanda.txt \
+	      lng.txt \
+	      lng.tmp \
+	      pid_analista.txt
+
 
 .PHONY: all clean run test
