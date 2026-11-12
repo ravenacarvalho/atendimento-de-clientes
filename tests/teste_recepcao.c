@@ -11,8 +11,17 @@
 #include "recepcao.h"
 #include "escalonador.h"
 
-// testes da fila e da recepcao, rodando em cima do escalonador de verdade.
+// testes da fila e da recepcao, rodando em cima do escalonador de verdade
 // precisa do ./cliente na pasta (o make test ja compila antes)
+
+/* RESUMO: o teste tem 6 grupos:
+   1) fila            
+   2) parametros N e X
+   3) N finito (40 clientes)
+   4) N=0 + fila cheia
+   5) tecla 's'
+   6) ./cliente ausente
+*/
 
 static int total = 0, falhas = 0;
 
@@ -44,6 +53,10 @@ static CLIENTE mk(pid_t pid, int prio, long chegada)
     return c;
 }
 
+// GRUPO 1 - FILA: testa so a fila, sem processos.
+// confere (a) a ordem de saida: menor prazo primeiro, alta prioridade passa na
+// frente e empate desempata por quem chegou antes; (b) o limite de 100 clientes;
+// (c) a regra de satisfacao (tempo de espera <= paciencia)
 static void teste_fila(void)
 {
     FILA f;
@@ -93,7 +106,9 @@ static void teste_fila(void)
     confere(cliente_satisfeito(&f, &c, 1101) == 0, "baixa, 1001 ms: insatisfeito");
 }
 
-// leitura de N e X
+// GRUPO 2 - PARAMETROS: testa a leitura de "./atendimento N X".
+// aceita valores validos (inclusive N=0) e recusa: falta ou sobra de argumento,
+// texto que nao e numero ("abc", "10x", vazio), N negativo, X zero ou negativo
 static void teste_parametros(void)
 {
     long n = -7, x = -7;
@@ -123,8 +138,9 @@ static void teste_parametros(void)
     confere(recepcao_le_parametros(3, vazio, &n, &x) != 0, "N vazio recusado");
 }
 
-// consumidor: faz o papel do atendente (acorda o cliente e espera ele terminar)
-// so pra exercitar a recepcao, enquanto o atendente de verdade nao existe
+// CONSUMIDOR (Atendente falso): faz o papel do atendente (acorda o cliente e espera ele terminar)
+// so pra exercitar a recepcao, enquanto o atendente de verdade nao existe.
+// retira da fila, manda SIGCONT no cliente, espera ele acabar e confere os dados
 typedef struct {
     RECEPCAO *r;
     FILA     *fila;
@@ -165,7 +181,10 @@ static void consumidor(void *arg)
     }
 }
 
-// N finito
+// GRUPO 3 - N FINITO: Recepcao + consumidor com N = 40 clientes.
+// confere que criou exatamente 40, todos foram atendidos, a fila esvaziou,
+// o tempo lido e sempre 1, 5 ou 15, o prazo esta certo (chegada + paciencia),
+// as duas prioridades apareceram, demanda.txt foi apagado e nao sobrou processo filho
 static void teste_n_finito(void)
 {
     enum { N = 40 };
@@ -201,7 +220,10 @@ static void teste_n_finito(void)
     recepcao_remove_semaforos();
 }
 
-// N = 0 com a fila cheia: tem que pausar, retomar e parar
+// GRUPO 4 - N = 0 COM FILA CHEIA: sem consumidor, a fila tem que encher.
+// a thread "controle" confere 3 coisas: (1) a Recepcao PAUSA em exatamente 100;
+// (2) ao abrir 5 vagas, ela RETOMA, cria 5 e para de novo em 100;
+// (3) recepcao_para() encerra a Recepcao sem erro
 typedef struct {
     RECEPCAO *r;
     FILA     *fila;
@@ -280,7 +302,10 @@ static void teste_n_zero_fila_cheia(void)
     recepcao_remove_semaforos();
 }
 
-// N = 0 parado pelo 's' (chamo escalonador_pede_parada, que e o que a tecla faz)
+// GRUPO 5 - TECLA 's': N = 0 (infinito) parado pelo 's'.
+// (chamo escalonador_pede_parada, que e o que a tecla faz; a leitura real do
+// teclado e da Pessoa 1). confere que a Recepcao para sozinha e que tudo que
+// foi criado foi atendido
 static void controle_tecla_s(void *arg)
 {
     RECEPCAO *r = arg;
@@ -314,7 +339,9 @@ static void teste_tecla_s(void)
     recepcao_remove_semaforos();
 }
 
-// sem o ./cliente na pasta tem que falhar limpo, sem travar
+// GRUPO 6 - SEM ./cliente: sem o ./cliente na pasta tem que falhar limpo, sem travar.
+// o teste muda para /tmp (onde nao ha ./cliente) e confere erro=1, nenhum cliente
+// criado e nenhum processo sobrando. (e o timeout/erro de exec funcionando)
 static void teste_sem_cliente(void)
 {
     FILA f; RECEPCAO r;

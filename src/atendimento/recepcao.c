@@ -13,8 +13,16 @@
 #include <semaphore.h>
 
 #include "recepcao.h"
-// do escalonador: cede_processador, thread_dorme, tempo_agora_ms, entra_atomico/sai_atomico e escalonador_deve_parar
-#include "escalonador.h"
+#include "escalonador.h" 
+
+/*
+   A Recepção é uma thread que cria processos Cliente, um de cada vez.
+   Pra cada um: cria, espera ele se suspender (SIGSTOP = sinal de que o
+   demanda.txt já foi escrito), lê o tempo de atendimento, sorteia a
+   prioridade (50% cada) e põe na fila.
+   Se a fila chega a 100, ela pausa até abrir vaga.
+   No início, também cria os semáforos /sem_atend e /sem_block.
+ */
 
 // ---- funções de apoio ----
 
@@ -42,12 +50,12 @@ static unsigned prox_bit(void)
 }
 
 // Diz se a Recepção deve parar de criar clientes. Devolve 1 (sim) ou 0 (não)
-// parar pode vir de dois lugares: recepcao_para() ou a tecla 's' (que o
-// escalonador trata)
+// Para se recepcao_para() foi chamada, OU se N = 0 (infinitos) e apertaram 's'
 static int deve_parar(const RECEPCAO *r)
 {
-    // uma alternativa caso dê erro
-    return r->parar || (r->n == 0 && escalonador_deve_parar());
+    return r->parar                          // pediram para parar via recepcao_para()
+        || (r->n == 0                        // OU clientes infinitos (N = 0)...
+            && escalonador_deve_parar());    //     e o 's' foi apertado
 }
 
 // ---- leitura de N e X ----
@@ -94,34 +102,46 @@ int recepcao_le_parametros(int argc, char *argv[], long *n, long *x)
 
 // ---- semaforos ----
 
-
+/* apaga os dois semáforos do sistema. semáforo nomeado continua existindo
+   depois que o programa acaba, então precisa ser removido no fim */
 void recepcao_remove_semaforos(void)
 {
     sem_unlink(SEM_ATEND_NOME);
     sem_unlink(SEM_BLOCK_NOME);
 }
 
+/* cria os dois semáforos nomeados. um semáforo é como uma chave compartilhada:
+   quem pega a chave (sem_wait) faz sua tarefa e os outros esperam até ela
+   ser devolvida (sem_post).
+     /sem_atend: o Cliente usa durante o atendimento
+     /sem_block: protege o arquivo dos PIDs (Atendente e Analista)
+   devolve 0 (criou os dois) ou -1 (erro) */
 static int cria_semaforos(RECEPCAO *r)
 {
+    // /sem_atend: o Cliente abre pelo nome, então precisa existir antes de qualquer cliente
+    // O_CREAT = se não existir, cria (se já existir, só abre)
+    // 0644    = permissões, como as de arquivo (dono lê e escreve, outros só leem)
+    // 1       = valor inicial: a chave começa disponível
     r->sem_atend = sem_open(SEM_ATEND_NOME, O_CREAT, 0644, 1);
 
-    if (r->sem_atend == SEM_FAILED) {
+    if (r->sem_atend == SEM_FAILED) {   // não conseguiu criar
         avisa("recepcao: sem_open(%s): %s\n",
-              SEM_ATEND_NOME, strerror(errno));
+              SEM_ATEND_NOME, strerror(errno));   // strerror = errno em texto legível
         return -1;
     }
 
+    // /sem_block: criado do mesmo jeito
     r->sem_block = sem_open(SEM_BLOCK_NOME, O_CREAT, 0644, 1);
 
-    if (r->sem_block == SEM_FAILED) {
+    if (r->sem_block == SEM_FAILED) {   // não conseguiu criar
         avisa("recepcao: sem_open(%s): %s\n",
               SEM_BLOCK_NOME, strerror(errno));
 
-        sem_close(r->sem_atend);
+        sem_close(r->sem_atend);   // o primeiro já estava aberto: fecha pra não deixar recurso aberto
         return -1;
     }
 
-    return 0;
+    return 0;   // os dois foram criados
 }
 
 // ---- criacao de um cliente ----
@@ -157,49 +177,49 @@ static void mata_cliente(pid_t pid)
     waitpid(pid, &status, 0);   // depois do SIGKILL volta rapido
 }
 
-// o cliente escreve o demanda.txt e se suspende com SIGSTOP. a recepcao so
-// pode ler o arquivo depois disso.
-//
-// aqui nao da pra usar waitpid bloqueante: as threads sao de usuario, entao
-// ele pararia o processo inteiro e o atendente ficaria congelado junto.
-// uso WNOHANG e devolvo a CPU pro escalonador entre as tentativas.
-//
-// devolve 0 (cliente suspenso), -1 (erro) ou 1 (mandaram parar, ja matei o cliente)
+// espera o cliente escrever o demanda.txt e se suspender (SIGSTOP)
+/* uso WNOHANG (não bloqueia): as threads são de usuário, então se não parou
+ cede a CPU e tento de novo
+ devolve: 0 = parou | 1 = mandaram parar | -1 = erro */
 static int espera_cliente_suspender(const RECEPCAO *r, pid_t pid)
 {
     int status;
-    long limite = tempo_agora_ms() + CLIENTE_TIMEOUT_MS;
+    long limite = tempo_agora_ms() + CLIENTE_TIMEOUT_MS;   // prazo máximo: 5 s
 
-    for (;;) {
+    for (;;) {   // repete até ter uma resposta
+        // pergunta ao sistema o que houve com o cliente, SEM bloquear
         pid_t w = waitpid(pid, &status, WUNTRACED | WNOHANG);
 
+        // 1) o cliente mudou de estado
         if (w == pid) {
-            if (WIFSTOPPED(status)) return 0;
+            if (WIFSTOPPED(status)) return 0;   // parou: é o que eu esperava
             avisa("recepcao: o cliente terminou sem se suspender "
                   "(exec de %s falhou?)\n", CLIENTE_EXEC);
-            return -1;
+            return -1;                          // morreu sem parar: erro
         }
+        // 2) erro do waitpid (EINTR = interrompido pelo SIGALRM, é normal, ignora)
         if (w < 0 && errno != EINTR) {
             avisa("recepcao: waitpid: %s\n", strerror(errno));
             return -1;
         }
+        // 3) apertaram 's' (ou recepcao_para): mata o cliente e sai
         if (deve_parar(r)) {
             mata_cliente(pid);
             return 1;
         }
+        // 4) passou de 5 s: algo deu errado, desiste pra não esperar pra sempre
         if (tempo_agora_ms() > limite) {
             avisa("recepcao: cliente nao se suspendeu em %d ms\n",
                   CLIENTE_TIMEOUT_MS);
             mata_cliente(pid);
             return -1;
         }
+        // 5) ainda não parou: devolve a CPU pras outras threads e pergunta de novo
         cede_processador();
     }
 }
 
-// le o numero que o cliente escreveu e apaga o arquivo. uso open/read em vez
-// de fopen porque o fopen faz malloc, e eu nao quero malloc numa thread que
-// pode ser interrompida
+// le o numero que o cliente escreveu e apaga o arquivo
 static int le_demanda(long *tempo)
 {
     char buf[32];
@@ -219,40 +239,48 @@ static int le_demanda(long *tempo)
     return le_inteiro(buf, tempo);
 }
 
-// cria um cliente e poe na fila. devolve 0 (inseriu), 1 (mandaram parar) ou -1 (erro)
+/* Cria um cliente e põe na fila. devolve 0 (inseriu), 1 (mandaram parar) ou -1 (erro)
+   fluxo: cria processo → anota chegada → espera parar → lê demanda
+        → sorteia prioridade → insere na fila → conta
+se uma etapa falha, mata o cliente (se ele já existe) e devolve o erro */ 
 static int cria_cliente(RECEPCAO *r)
 {
-    CLIENTE c;
-    long tempo;
-    int  esp;
-    pid_t pid;
+    CLIENTE c; // a "ficha" do cliente, que vai pra fila
+    long tempo; // o tempo de atendimento que o cliente escreveu no demanda.txt
+    int  esp;  // o resultado da espera pelo cliente (0, 1 ou -1)
+    int  ok;       // resultado da leitura da demanda (0 = ok, -1 = falhou)
+    pid_t pid; // o número (PID) do processo cliente
 
+    // cria o processo 
     pid = cria_processo_cliente();
     if (pid < 0) return -1;
 
-    // o enunciado (nota 4) diz que a chegada e o momento da criacao do cliente
+    // monta a ficha: chegada = momento da criação do cliente
     memset(&c, 0, sizeof(c));
     c.pid        = pid;
     c.chegada_ms = tempo_agora_ms();
 
-    esp = espera_cliente_suspender(r, pid);
-    if (esp != 0) return esp;
+    esp = espera_cliente_suspender(r, pid); // espera o cliente escrever a demanda e parar (SIGSTOP)
+    if (esp != 0) return esp; //  se não deu certo para e devolve o código (1 = parar, -1 = erro)
 
-    if (le_demanda(&tempo) != 0) {
+    ok = le_demanda(&tempo);   // lê o tempo de atendimento em demanda.txt (e apaga o arquivo)
+    if (ok != 0) {             // não deu certo
         avisa("recepcao: demanda invalida do cliente %d\n", (int)pid);
-        mata_cliente(pid);
+        mata_cliente(pid);     // ele está suspenso e nunca acordaria sozinho
         return -1;
     }
-    c.tempo_atendimento = tempo;
-    c.prioridade = prox_bit() ? PRIORIDADE_ALTA : PRIORIDADE_BAIXA;   // 50% cada
+    c.tempo_atendimento = tempo; // guarda o tempo na ficha
+    // sorteia a prioridade: alta (paciência X/2) ou baixa (paciência X)
+    c.prioridade = prox_bit() ? PRIORIDADE_ALTA : PRIORIDADE_BAIXA;   
 
-    if (fila_insere(r->fila, &c) != 0) {   // nao deveria acontecer, a thread ja checa antes
+    // coloca na fila (não deveria falhar: a thread já confere se está cheia)
+    if (fila_insere(r->fila, &c) != 0) {   
         avisa("recepcao: fila cheia na insercao\n");
-        mata_cliente(pid);
+        mata_cliente(pid); // não entrou na fila, então não pode ficar suspenso
         return -1;
     }
-    r->criados++;
-    return 0;
+    r->criados++; // mais um cliente na fila
+    return 0; // sucesso
 }
 
 // ---- a thread ----
@@ -272,36 +300,37 @@ void recepcao_para(RECEPCAO *r)
     r->parar = 1;
 }
 
+// Decide quando criar o próximo cliente e quando parar
 void recepcao_thread(void *arg)
 {
-    RECEPCAO *r = (RECEPCAO *)arg;
-
-    if (cria_semaforos(r) != 0) {
-        r->erro = 1;
-        r->finalizada = 1;
+    // o escalonador entrega um void* genérico. Converto de volta pra struct da Recepção
+    RECEPCAO *r = (RECEPCAO *)arg; 
+    if (cria_semaforos(r) != 0) { // cria_semaforos devolve 0 se deu certo e -1 se falhou
+        r->erro = 1; // houve erro
+        r->finalizada = 1; // a Recepção terminou, o Atendente não fica esperando clientes que não virão
         return;
     }
-    r->semaforos_prontos = 1;
+    r->semaforos_prontos = 1; // Avisa pro Atendente: os semáforos já existem, pode usar
 
-    // com N = 0 o laco nunca acaba sozinho, so por parada ou erro
+    // Roda até criar N clientes. com N = 0 nunca acaba sozinho (só por parada ou erro)
     while (r->n == 0 || r->criados < r->n) {
         int res;
 
-        if (deve_parar(r)) break;
+        // Se apertaram s (com N = 0) ou chamaram recepcao_para(), sai do laço na hora
+        if (deve_parar(r)) break; 
 
-        // fila com 100: espera abrir vaga (nota 9). so a recepcao insere,
-        // entao a fila nao enche entre esse teste e a insercao.
-        // durmo 1 ms em vez de ficar rodando o laco sem parar
+        // fila com 100 clientes: não pode criar mais
+        // espera abrir vaga, dormindo 1 ms entre as conferências
         if (fila_cheia(r->fila)) {
-            thread_dorme(1);
-            continue;
+            thread_dorme(1);   // dorme 1 ms sem travar as outras threads (o Atendente pode retirar alguém)
+            continue;          // volta ao início do laço e confere de novo (parar? fila cheia?)
         }
 
-        res = cria_cliente(r);
-        if (res < 0) { r->erro = 1; break; }
-        if (res > 0) break;   // mandaram parar no meio da criacao
+        res = cria_cliente(r); // Cria um cliente e guarda o resultado em res (0 = ok, 1 = parar, -1 = erro)
+        if (res < 0) { r->erro = 1; break; } // erro: marca e sai
+        if (res > 0) break;   // mandaram parar: sai 
     }
-    r->finalizada = 1;
+    r->finalizada = 1; // avisa o Atendente que não vêm mais clientes
 }
 
 // ---- limpeza no fim ----
