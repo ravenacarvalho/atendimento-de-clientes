@@ -13,12 +13,12 @@
 #include <semaphore.h>
 
 #include "recepcao.h"
-// do escalonador: cede_processador, thread_dorme, tempo_agora_ms,
-// entra_atomico/sai_atomico e escalonador_deve_parar
+// do escalonador: cede_processador, thread_dorme, tempo_agora_ms, entra_atomico/sai_atomico e escalonador_deve_parar
 #include "escalonador.h"
 
-// imprime erro em stderr. o fprintf tem um lock interno, entao se a thread
-// perder a CPU no meio e outra tentar imprimir, trava. por isso fica atomico
+// ---- funções de apoio ----
+
+//escreve uma mensagem de erro na tela
 static void avisa(const char *fmt, ...)
 {
     va_list ap;
@@ -30,23 +30,24 @@ static void avisa(const char *fmt, ...)
     sai_atomico();
 }
 
-// sorteador proprio (xorshift). nao usei rand() porque ele guarda estado
-// global com lock, e com preempcao eu prefiro nao depender disso
-static unsigned prox_bit(RECEPCAO *r)
+// É usada para sortear a prioridade do cliente (1 = alta, 0 = baixa)
+static unsigned prox_bit(void)
 {
-    unsigned long long x = r->semente;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    r->semente = x;
-    return (unsigned)((x * 2685821657736338717ULL) >> 63);
+    unsigned bit;
+
+    entra_atomico();
+    bit = rand() % 2; // sorteia um num e divide por 2, o resultado é 0 ou 1
+    sai_atomico();
+    return bit;
 }
 
+// Diz se a Recepção deve parar de criar clientes. Devolve 1 (sim) ou 0 (não)
 // parar pode vir de dois lugares: recepcao_para() ou a tecla 's' (que o
 // escalonador trata)
 static int deve_parar(const RECEPCAO *r)
 {
-    return r->parar || escalonador_deve_parar();
+    // uma alternativa caso dê erro
+    return r->parar || (r->n == 0 && escalonador_deve_parar());
 }
 
 // ---- leitura de N e X ----
@@ -64,6 +65,7 @@ static int le_inteiro(const char *s, long *out)
     return 0;
 }
 
+// Lê quantos clientes vão chegar (N) e quanto tempo cada um aguenta esperar (X)
 int recepcao_le_parametros(int argc, char *argv[], long *n, long *x)
 {
     long vn, vx;
@@ -92,6 +94,7 @@ int recepcao_le_parametros(int argc, char *argv[], long *n, long *x)
 
 // ---- semaforos ----
 
+
 void recepcao_remove_semaforos(void)
 {
     sem_unlink(SEM_ATEND_NOME);
@@ -100,22 +103,24 @@ void recepcao_remove_semaforos(void)
 
 static int cria_semaforos(RECEPCAO *r)
 {
-    // se uma execucao anterior caiu, pode ter sobrado semaforo velho no
-    // sistema. um com valor 0 travaria tudo, entao apaga antes de criar
-    recepcao_remove_semaforos();
-
     r->sem_atend = sem_open(SEM_ATEND_NOME, O_CREAT, 0644, 1);
+
     if (r->sem_atend == SEM_FAILED) {
-        avisa("recepcao: sem_open(%s): %s\n", SEM_ATEND_NOME, strerror(errno));
+        avisa("recepcao: sem_open(%s): %s\n",
+              SEM_ATEND_NOME, strerror(errno));
         return -1;
     }
+
     r->sem_block = sem_open(SEM_BLOCK_NOME, O_CREAT, 0644, 1);
+
     if (r->sem_block == SEM_FAILED) {
-        avisa("recepcao: sem_open(%s): %s\n", SEM_BLOCK_NOME, strerror(errno));
+        avisa("recepcao: sem_open(%s): %s\n",
+              SEM_BLOCK_NOME, strerror(errno));
+
         sem_close(r->sem_atend);
-        recepcao_remove_semaforos();
         return -1;
     }
+
     return 0;
 }
 
@@ -239,7 +244,7 @@ static int cria_cliente(RECEPCAO *r)
         return -1;
     }
     c.tempo_atendimento = tempo;
-    c.prioridade = prox_bit(r) ? PRIORIDADE_ALTA : PRIORIDADE_BAIXA;   // 50% cada
+    c.prioridade = prox_bit() ? PRIORIDADE_ALTA : PRIORIDADE_BAIXA;   // 50% cada
 
     if (fila_insere(r->fila, &c) != 0) {   // nao deveria acontecer, a thread ja checa antes
         avisa("recepcao: fila cheia na insercao\n");
@@ -254,18 +259,12 @@ static int cria_cliente(RECEPCAO *r)
 
 void recepcao_inicia(RECEPCAO *r, long n, FILA *fila)
 {
-    struct timespec ts;
-
     memset(r, 0, sizeof(*r));
     r->n    = n;
     r->fila = fila;
 
-    // semente do sorteador: mistura hora e pid pra nao dar o mesmo toda vez
-    clock_gettime(CLOCK_REALTIME, &ts);
-    r->semente = ((unsigned long long)ts.tv_nsec << 20)
-               ^ ((unsigned long long)ts.tv_sec  << 7)
-               ^ (unsigned long long)getpid()
-               ^ 0x9E3779B97F4A7C15ULL;   // constante so pra nunca ser zero
+    // semente do rand: mistura hora e pid pra nao dar a mesma sequencia toda vez
+    srand((unsigned)time(NULL) ^ (unsigned)getpid());
 }
 
 void recepcao_para(RECEPCAO *r)
